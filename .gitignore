@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*_videobug/
+vb_in_*.mp4
+.DS_Store

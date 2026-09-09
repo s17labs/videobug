@@ -1,40 +1,40 @@
-# Example: stalled spinner, 8-second clip
+# Example: stalled slider, 6.5-second clip
 
-Scenario: tapping checkout shows a spinner that visibly stalls mid-animation.
+Scenario: a slider glides across the screen, stalls dead for ~2s mid-screen, then resumes.
 The recording is 8s, 480x800. Command:
 
 ```sh
 python3 videobug.py --latest \
-  --app "demo checkout" \
-  --expected "smooth loading spinner" \
-  --actual "spinner stalls mid-animation"
+  --app "demo player" \
+  --expected "slider glides across smoothly" \
+  --actual "slider stalls dead mid-screen for 2s"
 ```
 
 Output:
 
 ```
 videobug done: bug_videobug/report.md
-  clip 8.0s 480x800 -> 16 sampled, 8 key frames, 1 freeze(s), 2 jank spike(s)
+  clip 6.5s 480x800 -> 13 sampled, 10 key frames, 1 freeze(s), 0 jank spike(s)
   agent reads: bug_videobug/report.md (+ frames/*.png as images)
 ```
 
 ## What the agent sees
 
-| 0.00s — start | 3.50s — freeze-start (1.5s still) | 5.00s — motion spike |
+| 2.00s — gliding | 3.00s — stalled dead | 6.00s — resumed |
 |---|---|---|
-| ![start](assets/shot-start.png) | ![freeze](assets/shot-freeze.png) | ![spike](assets/shot-spike.png) |
+| ![gliding](assets/shot-start.png) | ![stalled](assets/shot-freeze.png) | ![resumed](assets/shot-resume.png) |
 
 ## What the agent reads (`report.md`, trimmed)
 
 ```md
 ## Motion analysis (text version of the animation)
 
-- median motion: 4.5/255 per step at 2fps; low = still, high = big visual change.
-- FREEZE x1: 1.5s around 3.5s
-- JANK spikes x2: 3.0s (79.1), 5.0s (79.6)
+- median motion: 3.9/255 per step at 2fps; low = still, high = big visual change.
+- FREEZE x1: 2.5s around 3.0s
+- JANK spikes x0: none
 ```
 
-One sentence the agent can now state before touching code: *"The spinner
-freezes for ~1.5s around 3.5s, bracketed by two hard cuts at 3.0s and 5.0s."*
-From there it greps for the checkout spinner/transition code instead of
+One sentence the agent can now state before touching code: *"The slider
+stalls dead for ~2s around 3.0s, then resumes."* From there it greps for the
+slider/transition code instead of
 guessing from a paragraph.

@@ -20,17 +20,17 @@ reads Markdown + images. See [docs/agent-setup.md](docs/agent-setup.md).
 
 ```console
 $ python3 videobug.py --latest \
-    --app "demo checkout" \
-    --expected "smooth loading spinner" --actual "spinner stalls mid-animation"
+    --app "demo player" \
+    --expected "slider glides across smoothly" --actual "slider stalls dead mid-screen for 2s"
 using latest recording: /sdcard/DCIM/ScreenRecorder/bug.mp4
 videobug done: bug_videobug/report.md
-  clip 8.0s 480x800 -> 16 sampled, 8 key frames, 1 freeze(s), 2 jank spike(s)
+  clip 6.5s 480x800 -> 13 sampled, 10 key frames, 1 freeze(s), 0 jank spike(s)
   agent reads: bug_videobug/report.md (+ frames/*.png as images)
 ```
 
-| 0.00s — start | 3.50s — freeze, 1.5s still | 5.00s — motion spike |
+| 2.00s — gliding | 3.00s — stalled dead | 6.00s — resumed |
 |---|---|---|
-| ![start](docs/assets/shot-start.png) | ![freeze](docs/assets/shot-freeze.png) | ![spike](docs/assets/shot-spike.png) |
+| ![gliding](docs/assets/shot-start.png) | ![stalled](docs/assets/shot-freeze.png) | ![resumed](docs/assets/shot-resume.png) |
 
 Full annotated walkthrough: [docs/example.md](docs/example.md).
 
@@ -62,9 +62,9 @@ Each run writes `<name>_videobug/` next to your video:
 ```md
 ## Motion analysis (text version of the animation)
 
-- median motion: 4.5/255 per step at 2fps; low = still, high = big visual change.
-- FREEZE x1: 1.5s around 3.5s
-- JANK spikes x2: 3.0s (79.1), 5.0s (79.6)
+- median motion: 3.9/255 per step at 2fps; low = still, high = big visual change.
+- FREEZE x1: 2.5s around 3.0s
+- JANK spikes x0: none
 ```
 
 </details>

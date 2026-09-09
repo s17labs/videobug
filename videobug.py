@@ -4,10 +4,12 @@
 100% local. Deps: system ffmpeg/ffprobe + Pillow. No network, no numpy, no cloud.
 
 Flow:
-  1. Android Screen Recorder -> bug.mp4 (copy to /workspace, never work on /sdcard directly)
-  2. python3 videobug.py bug.mp4 --expected "..." --actual "..." --out ./bug_videobug
-  3. Agent reads report.md + selected frame PNGs (it understands images, not video)
-     and fixes the code. Temporal info (freeze/jank) is converted to text scores.
+  1. Phone Screen Recorder -> bug.mp4 (or omit the filename: --latest
+     auto-picks the newest recording and stages /sdcard copies itself)
+  2. python3 videobug.py --latest --expected "..." --actual "..."
+  3. Agent reads <name>_videobug/report.md + selected frame PNGs (it understands
+     images, not video) and fixes the code. Temporal info (freeze/jank) is
+     converted to text scores.
 
 Typical animation bug: 5-15s clip, 2 fps, max 10 frames keeps the report small.
 """
@@ -26,6 +28,8 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+__version__ = "0.1.0"
+
 # ---------------------------------------------------------------- helpers
 
 def find_bin(name: str) -> str:
@@ -36,7 +40,9 @@ def find_bin(name: str) -> str:
     found = shutil.which(name)
     if found:
         return found
-    raise SystemExit(f"missing dependency: '{name}' not found. Install once with: apk add ffmpeg")
+    raise SystemExit(
+        f"missing dependency: '{name}' not found. Install ffmpeg once, then re-run "
+        "(Alpine: apk add ffmpeg; Debian/Ubuntu: apt install ffmpeg; macOS: brew install ffmpeg)")
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess:
@@ -149,13 +155,17 @@ def detect_events(scores: list[float], fps: float,
 
 def select_keys(n: int, scores: list[float], freezes: list[dict],
                 janks: list[dict], max_frames: int) -> list[tuple[int, str]]:
-    """Pick (frame_idx, label) pairs, always including first+last. Ranked, then time-sorted."""
-    picks: dict[int, str] = {0: "start", n - 1: "end"}
+    """Pick (frame_idx, label) pairs, always including first+last. Ranked, then time-sorted.
+
+    Survival priority when over cap: start/end first, then freeze/jank event
+    markers (the actual findings), then plain samples by motion score.
+    """
+    picks: dict[int, tuple[str, int]] = {0: ("start", 2), n - 1: ("end", 2)}
     for f in freezes:
-        picks.setdefault(f["from_idx"], f"freeze-start {f['dur']}s")
-        picks.setdefault(f["to_idx"], "freeze-end")
+        picks.setdefault(f["from_idx"], (f"freeze-start {f['dur']}s", 1))
+        picks.setdefault(f["to_idx"], ("freeze-end", 1))
     for j in janks[:max_frames]:
-        picks.setdefault(j["idx"], f"motion-spike {j['score']}")
+        picks.setdefault(j["idx"], (f"motion-spike {j['score']}", 1))
     # Fill remaining slots uniformly so smooth animations still get coverage.
     # Skip indices inside freeze ranges (they're already represented by
     # freeze-start/freeze-end) to avoid redundant stills.
@@ -171,17 +181,19 @@ def select_keys(n: int, scores: list[float], freezes: list[dict],
                 break
             if idx in frozen:
                 continue
-            picks.setdefault(idx, "sample")
-    # Enforce cap: keep start/end + highest-score frames.
+            picks.setdefault(idx, ("sample", 0))
+    # Enforce cap: start/end first, then event markers, then highest motion.
     if len(picks) > max_frames:
-        ranked = sorted(picks, key=lambda i: (i in (0, n - 1), scores[i] if i < len(scores) else 0),
+        ranked = sorted(picks,
+                        key=lambda i: (picks[i][1], i in (0, n - 1),
+                                       scores[i] if i < len(scores) else 0),
                         reverse=True)[:max_frames]
         picks = {i: picks[i] for i in ranked}
-    return sorted(picks.items())
+    return sorted((i, label) for i, (label, _) in picks.items())
 
 
-# Where Android screen recordings usually land (FUSE, read-only is fine for search).
-# Order matters only for the integer tiebreak; newest mtime always wins.
+# Where phone recordings usually land. /workspace and /tmp/opencode cover
+# videos handed to the agent as files; /sdcard dirs are FUSE (slow to walk).
 CANDIDATE_DIRS = [
     Path("/sdcard/DCIM/ScreenRecorder"),
     Path("/sdcard/Movies"),
@@ -191,38 +203,65 @@ CANDIDATE_DIRS = [
     Path("/tmp/opencode"),
 ]
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
+# Never descend here: caches, VCS metadata, and our own report outputs.
+PRUNE_DIRS = {"node_modules", "__pycache__", ".git", ".hg",
+              "frames", "frames_all"}
 
 
 def find_latest_recording() -> Path | None:
-    """Newest video file across candidate dirs (recursive, skips *_videobug outputs)."""
+    """Newest video file across candidate dirs.
+
+    Prunes hidden/cached/output dirs (a naive recursive walk takes ~1 min on
+    a workspace with node_modules). Skips our own outputs and staged copies:
+    without the vb_in_ exclusion, --latest would re-pick the copy it staged
+    on the previous run and stack prefixes (vb_in_vb_in_...).
+    """
     best: Path | None = None
     best_mtime = -1.0
-    for d in CANDIDATE_DIRS:
-        if not d.is_dir():
+    for root in CANDIDATE_DIRS:
+        if not root.is_dir():
             continue
         try:
-            files = [p for p in d.rglob("*") if p.is_file()
-                     and p.suffix.lower() in VIDEO_EXTS
-                     and "_videobug" not in p.parts
-                     and "frames" not in p.parts]
+            walker = os.walk(root)
+            for dirpath, dirnames, filenames in walker:
+                dirnames[:] = [d for d in dirnames
+                               if not d.startswith(".")
+                               and d not in PRUNE_DIRS
+                               and "_videobug" not in d]
+                for fn in filenames:
+                    if not fn.lower().endswith(tuple(VIDEO_EXTS)):
+                        continue
+                    if "_videobug" in fn or fn.startswith("vb_in_"):
+                        continue
+                    try:
+                        mt = Path(dirpath, fn).stat().st_mtime
+                    except OSError:
+                        continue
+                    if mt > best_mtime:
+                        best_mtime, best = mt, Path(dirpath, fn)
         except (PermissionError, OSError):
             continue
-        for p in files:
-            try:
-                mt = p.stat().st_mtime
-            except OSError:
-                continue
-            if mt > best_mtime:
-                best_mtime, best = mt, p
     return best
 
 
 # ---------------------------------------------------------------- main
 
+def parse_fps(raw: object) -> float | None:
+    """Parse an ffprobe avg_frame_rate like '30/1' (or '0/0') to float."""
+    try:
+        if isinstance(raw, str) and "/" in raw:
+            num, den = raw.split("/", 1)
+            return float(num) / float(den) if float(den) else None
+        return float(raw)  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        return None
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         prog="videobug",
         description="Convert an Android screen recording into an agent-readable report (local only).")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("input", nargs="?", default="",
                     help="input video; omit (or pass --latest) to auto-use newest recording")
     ap.add_argument("--latest", action="store_true",
@@ -243,6 +282,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
+    if not 0 < args.fps <= 60:
+        print(f"error: --fps must be in (0, 60], got {args.fps}", file=sys.stderr)
+        return 2
+    if args.max_frames < 3:
+        print(f"error: --max-frames must be >= 3, got {args.max_frames}", file=sys.stderr)
+        return 2
+    if args.width < 144:
+        print(f"error: --width must be >= 144, got {args.width}", file=sys.stderr)
+        return 2
     if args.latest or not args.input:
         found = find_latest_recording()
         if found is None:
@@ -279,10 +327,18 @@ def main(argv: list[str] | None = None) -> int:
     ffprobe = find_bin("ffprobe")
 
     meta = probe_video(ffprobe, staged)
+    # Never sample faster than the source: the fps filter would duplicate
+    # frames, and duplicates read as freezes.
+    fps = args.fps
+    src_fps = parse_fps(meta.get("fps_raw"))
+    if src_fps and fps > src_fps:
+        print(f"note: capping --fps {fps:g} to source rate {src_fps:g} "
+              f"(faster would duplicate frames and fake freezes)", file=sys.stderr)
+        fps = src_fps
     all_dir = out / "frames_all"
-    frames = extract_frames(ffmpeg, staged, all_dir, args.fps, args.width)
+    frames = extract_frames(ffmpeg, staged, all_dir, fps, args.width)
     scores = diff_scores(frames)
-    freezes, janks = detect_events(scores, args.fps, args.freeze_thresh, args.freeze_secs)
+    freezes, janks = detect_events(scores, fps, args.freeze_thresh, args.freeze_secs)
     keys = select_keys(len(frames), scores, freezes, janks, args.max_frames)
 
     # Copy selected frames with timestamped names.
@@ -290,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
     frames_dir.mkdir(parents=True, exist_ok=True)
     key_files: list[tuple[float, str, str, float]] = []  # (t, label, filename, score)
     for idx, label in keys:
-        t = round(idx / args.fps, 2)
+        t = round(idx / fps, 2)
         dest = frames_dir / f"frame-{t:06.2f}s-{label.split()[0]}.png"
         shutil.copy2(frames[idx], dest)
         key_files.append((t, label, dest.name, round(scores[idx], 1)))
@@ -305,13 +361,14 @@ def main(argv: list[str] | None = None) -> int:
         jank_idxs = {j["idx"] for j in janks}
         for i in range(len(frames)):
             flag = "freeze" if i in freeze_idxs else ("jank" if i in jank_idxs else "")
-            w.writerow([i, round(i / args.fps, 2), round(scores[i], 1), flag])
+            w.writerow([i, round(i / fps, 2), round(scores[i], 1), flag])
 
     with open(out / "meta.json", "w") as fh:
         json.dump({"input": src.name, "created_utc": datetime.now(timezone.utc).isoformat(),
-                   "fps_extract": args.fps, "frames_extracted": len(frames),
+                   "fps_extract": fps, "frames_extracted": len(frames),
                    "video": meta, "freezes": freezes, "janks": janks,
-                   "tool": "videobug-local", "network": "none"}, fh, indent=2)
+                   "tool": "videobug-local", "version": __version__, "network": "none"},
+                  fh, indent=2)
 
     # report.md — this is what the agent reads.
     lines = [
@@ -322,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         f"Actual: {args.actual or '(one line: what actually happens)'}",
         "",
         (f"Clip: {meta['duration']:.1f}s, {meta['width']}x{meta['height']}, "
-         f"{meta['codec']}, {len(frames)} frames sampled at {args.fps:g}fps "
+         f"{meta['codec']}, {len(frames)} frames sampled at {fps:g}fps "
          f"→ {len(key_files)} key frames below. 100% local, no upload."),
         "",
         "## Key moments (look at these images in order)",
@@ -336,16 +393,16 @@ def main(argv: list[str] | None = None) -> int:
         "## Motion analysis (text version of the animation)",
         "",
         f"- median motion: {statistics.median(scores[1:]) if len(scores) > 1 else 0.0:.1f}/255 per step "
-        f"at {args.fps:g}fps; low = still, high = big visual change.",
+        f"at {fps:g}fps; low = still, high = big visual change.",
     ]
     if freezes:
         lines.append(f"- FREEZE x{len(freezes)}: " + "; ".join(
-            f"{f['dur']}s around {(f['from_idx']/args.fps):.1f}s" for f in freezes))
+            f"{f['dur']}s around {(f['from_idx']/fps):.1f}s" for f in freezes))
     else:
         lines.append("- FREEZE x0: no still run ≥ "
                      f"{args.freeze_secs:g}s (threshold {args.freeze_thresh:g}).")
     lines.append(f"- JANK spikes x{len(janks)}: " + (
-        ", ".join(f"{(j['idx']/args.fps):.1f}s ({j['score']})" for j in janks[:8]) or "none"))
+        ", ".join(f"{(j['idx']/fps):.1f}s ({j['score']})" for j in janks[:8]) or "none"))
     lines += [
         "",
         "## For the fixing agent",
@@ -354,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
         f"3. Full timeline: `motion.csv`. All frames: `frames_all/` ({len(frames)} PNGs).",
         "4. Keep the fix minimal; re-record the same flow and re-run videobug to compare.",
         "",
-        "<!-- generated locally by tools/videobug/videobug.py — safe to paste into any agent -->",
+        "<!-- generated locally by videobug.py (s17labs/videobug) — safe to paste into any agent -->",
         "",
     ]
     (out / "report.md").write_text("\n".join(lines))

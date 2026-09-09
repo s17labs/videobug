@@ -18,7 +18,7 @@ cd videobug
 apk add ffmpeg            # Alpine / PRoot
 # or: sudo apt install ffmpeg   # Debian/Ubuntu
 # or: brew install ffmpeg       # macOS
-pip install -r requirements.txt   # pillow
+pip install -r requirements.txt
 ```
 
 ## Easiest flow — no terminal (chat only, OpenCode)

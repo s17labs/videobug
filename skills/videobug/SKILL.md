@@ -25,8 +25,8 @@ transition) on Android + AndCode/OpenCode.
    If expected/actual/app are missing, ask the user for those three things in
    plain words (no paths, no commands) and then proceed.
 2. **Convert.** Deps are system `ffmpeg`/`ffprobe` + Pillow
-   (`apk add ffmpeg`, `pip install pillow` — one-time, then offline). The
-   script stages `/sdcard` files into `/workspace` itself and writes
+   (`pip install -r requirements.txt` in the repo, plus a system ffmpeg —
+   one-time, then offline). The script stages `/sdcard` files itself and writes
    `<stem>_videobug/` with `report.md`, `frames/` (≤10 key PNGs), `motion.csv`,
    `frames_all/`, `meta.json`.
 3. **Look.** Read `<stem>_videobug/report.md` and view `frames/*.png` as images
